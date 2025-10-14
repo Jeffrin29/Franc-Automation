@@ -1,0 +1,9 @@
+Flask>=2.2
+Flask-SQLAlchemy>=3.0
+Flask-Cors>=3.0
+Flask-SocketIO>=5.3
+python-dotenv>=1.0
+paho-mqtt>=1.6
+PyJWT>=2.8
+werkzeug>=2.2
+eventlet>=0.33.0
