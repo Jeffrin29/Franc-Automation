@@ -2,7 +2,6 @@ import {DashboardLayout} from '@/components/dashboard/DashboardLayout';
 import { MetricCard } from '@/components/dashboard/MetricCard';
 import { CircularGauge } from '@/components/dashboard/CircularGauge';
 import { RealtimeChart } from '@/components/dashboard/RealtimeChart';
-import { DataTable } from '@/components/dashboard/DataTable';
 import { useLiveData } from '@/hooks/useLiveData';
 import { Thermometer, Droplets, Gauge, Wifi } from 'lucide-react';
 
@@ -110,12 +109,6 @@ const Index = () => {
             />
           </div>
         </div>
-
-        {/* Data Table */}
-        <DataTable
-          title="Recent Device Activity"
-          data={tableData}
-        />
       </div>
     </DashboardLayout>
   );

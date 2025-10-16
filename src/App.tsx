@@ -8,8 +8,17 @@ import Index from "@/pages/Index";
 import Devices from "@/pages/Devices";
 import Settings from "@/pages/Settings";
 import NotFound from "@/pages/NotFound";
+import RoleManagement from "@/pages/RoleManagement";
+import UserManagement from "@/pages/UserManagement";
+import Sensors from "@/pages/Sensors";
+import { DataTable } from "@/pages/DataTable";
+import DashboardBuilder from "@/pages/DashboardBuilder";
+import Dashboards from "@/pages/Dashboards";
 
 const queryClient = new QueryClient();
+
+// TODO: Replace this with your actual data source
+const tableData: any[] = [];
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -20,7 +29,13 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/devices" element={<Devices />} />
+          <Route path="/sensors" element={<Sensors />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/roles" element={<RoleManagement />} />
+          <Route path="/users" element={<UserManagement />} />
+          <Route path="/live" element={<DataTable title="Recent Device Activity" data={tableData} />} />
+          <Route path="/dashboard-builder" element={<DashboardBuilder />} />
+          <Route path="/dashboards" element={<Dashboards />} />
           {/* Add more routes like live-data, history later */}
           <Route path="*" element={<NotFound />} />
         </Routes>

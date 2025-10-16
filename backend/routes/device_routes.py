@@ -42,6 +42,16 @@ def add_device():
     db.session.add(device)
     db.session.commit()
 
+    # ✅ Auto-run migration when new device added
+    from subprocess import run
+    try:
+        print("[AUTO-MIGRATION] Running after device creation...")
+        run(["flask", "db", "migrate", "-m", "device_added"], check=False)
+        run(["flask", "db", "upgrade"], check=False)
+        print("[AUTO-MIGRATION] ✅ Migration applied successfully.")
+    except Exception as e:
+        print(f"[AUTO-MIGRATION] ⚠️ Migration failed: {e}")
+
     current_app.logger.info(f"[API] Device added: {device.name} (id={device.id})")
     return jsonify({"message": "Device added", "device": device.to_dict()}), 201
 

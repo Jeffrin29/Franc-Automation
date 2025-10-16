@@ -1,6 +1,7 @@
 import { Card } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 
 interface DataEntry {
   id: string;
@@ -33,6 +34,7 @@ export function DataTable({ title, data }: DataTableProps) {
   };
 
   return (
+    <DashboardLayout>
     <Card className="bg-gradient-card border-border">
       <div className="p-6 border-b border-border">
         <h3 className="text-lg font-semibold">{title}</h3>
@@ -67,5 +69,6 @@ export function DataTable({ title, data }: DataTableProps) {
         </Table>
       </div>
     </Card>
+    </DashboardLayout>
   );
 }

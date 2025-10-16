@@ -1,10 +1,13 @@
 import os
 import threading
 import tempfile
+import subprocess
 from flask import Flask, jsonify
 from flask_cors import CORS
 from extensions import db, socketio
 from fasteners import InterProcessLock
+from flask_migrate import Migrate
+from models import *
 
 
 def create_app():
@@ -28,20 +31,22 @@ def create_app():
 
     # Initialize extensions
     db.init_app(app)
+    migrate = Migrate(app, db)
     socketio.init_app(app, cors_allowed_origins="*")
 
     # Register blueprints
     from routes.device_routes import device_bp
     from routes.data_routes import data_bp
     from routes.auth_routes import auth_bp
-    from routes.settings_routes import settings_bp  # ✅ include settings route
+    from routes.settings_routes import settings_bp 
+    from routes.sensor_routes import sensor_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(device_bp, url_prefix="/api")
     app.register_blueprint(data_bp, url_prefix="/api")
-    app.register_blueprint(settings_bp, url_prefix="/api")  # ✅ register
+    app.register_blueprint(settings_bp, url_prefix="/api")
+    app.register_blueprint(sensor_bp, url_prefix="/api")
 
-    # Basic route to confirm backend is running
     @app.route("/")
     def home():
         return jsonify({"message": "✅ Franc Automation Backend Active"})
@@ -49,29 +54,37 @@ def create_app():
     return app
 
 
-# Initialize the app
 app = create_app()
+
+
+# --- Helper: Auto-migration ---
+def auto_migrate():
+    """Automatically migrate DB schema when app starts or model changes occur."""
+    try:
+        print("[MIGRATION] 🔍 Checking for new migrations...")
+        subprocess.run(["flask", "db", "migrate", "-m", "auto migration"], check=False)
+        subprocess.run(["flask", "db", "upgrade"], check=False)
+        print("[MIGRATION] ✅ Database migration applied successfully!")
+    except Exception as e:
+        print(f"[MIGRATION] ⚠️ Auto-migration failed: {e}")
 
 
 # --- MQTT Background Thread ---
 def run_mqtt_thread():
-    """Runs MQTT service in background."""
-    from mqtt_service import start_mqtt  # Lazy import to avoid circular import
+    from mqtt_service import start_mqtt
     print("[MQTT] Starting background thread...")
     start_mqtt()
     print("[MQTT] Background thread running.")
 
 
-# Prevent Flask debug reloader from spawning duplicate MQTT threads
 os.environ["WERKZEUG_RUN_MAIN"] = "true"
 
 if __name__ == "__main__":
-    # Create DB tables inside app context
     with app.app_context():
         db.create_all()
         print("✅ Database ensured at:", os.path.join(app.root_path, "instance", "devices.db"))
+        auto_migrate()  # ✅ Automatically run migrations at startup
 
-    # Use a lock file to prevent multiple MQTT threads
     lock_path = os.path.join(tempfile.gettempdir(), "mqtt_init.lock")
     mqtt_lock = InterProcessLock(lock_path)
 
@@ -83,5 +96,4 @@ if __name__ == "__main__":
         print("[SKIP] MQTT already running in another process.")
 
     print("\n Franc Automation Backend running at: http://127.0.0.1:5000\n")
-
     socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)

@@ -112,3 +112,4 @@ def start_mqtt():
         client.loop_forever()
     except Exception as e:
         print(f"[MQTT] ⚠️ Connection exception: {e}")
+

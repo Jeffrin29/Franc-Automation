@@ -9,14 +9,13 @@ import {
 } from "lucide-react";
 import { useDevicesLive } from "@/hooks/useDevicesLive";
 import { useState } from "react";
+import { api } from "@/api";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:5000";
 
 export default function Devices() {
   const { devices, loading, reload: loadDevices } = useDevicesLive();
@@ -48,38 +47,29 @@ export default function Devices() {
     console.log("%c[FORM SUBMIT]", "color:#00c853", formData);
 
     try {
-      const res = await fetch(`${API}/api/devices`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+      const json = await api.addDevice(formData);
+      alert("✅ Device added successfully!");
+      console.log("%c[DEVICE ADDED]", "color:#00c853", json);
+
+      // Reset form
+      setFormData({
+        name: "",
+        protocol: "mqtt://",
+        host: "",
+        port: 1883,
+        clientId: "",
+        username: "",
+        password: "",
+        mqttVersion: "3.1.1",
+        keepAlive: 60,
+        autoReconnect: true,
+        reconnectPeriod: 5000,
       });
 
-      const json = await res.json();
-      console.log("%c[API RESPONSE]", "color:#2979ff", json);
-
-      if (res.ok) {
-        alert("✅ Device added successfully!");
-        console.log("%c[DEVICE ADDED]", "color:#00c853");
-        setFormData({
-          name: "",
-          protocol: "mqtt://",
-          host: "",
-          port: 1883,
-          clientId: "",
-          username: "",
-          password: "",
-          mqttVersion: "3.1.1",
-          keepAlive: 60,
-          autoReconnect: true,
-          reconnectPeriod: 5000,
-        });
-        loadDevices();
-      } else {
-        alert("❌ Error adding device");
-        console.error(json);
-      }
+      loadDevices();
     } catch (error) {
-      console.error("%c[NETWORK ERROR]", "color:red", error);
+      console.error("%c[ADD DEVICE ERROR]", "color:red", error);
+      alert("❌ Error adding device");
     }
   };
 
@@ -88,26 +78,19 @@ export default function Devices() {
     console.log("%c[DEVICE DELETE]", "color:#ff1744", deviceId);
 
     try {
-      const res = await fetch(`${API}/api/devices/${deviceId}`, {
-        method: "DELETE",
-      });
-      const json = await res.json();
-      console.log("%c[DELETE RESPONSE]", "color:#ff9100", json);
-      if (res.ok) {
-        alert("🗑️ Device deleted successfully!");
-        loadDevices();
-      } else {
-        alert("❌ Failed to delete device");
-      }
+      await api.deleteDevice(deviceId);
+      alert("🗑️ Device deleted successfully!");
+      loadDevices();
     } catch (error) {
       console.error("%c[DELETE ERROR]", "color:red", error);
+      alert("❌ Failed to delete device");
     }
   };
 
   const handleEdit = (device: any) => {
     console.log("%c[DEVICE EDIT]", "color:#ffca28", device);
     alert(`Editing device: ${device.name}`);
-    // Later: open modal or inline form for editing
+    // TODO: add edit modal or inline form
   };
 
   return (
