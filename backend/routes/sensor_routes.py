@@ -1,12 +1,11 @@
-# backend/routes/sensor_routes.py
 from flask import Blueprint, request, jsonify
 from extensions import db, socketio
-from models import Sensor, Device  # assumes both models exist
+from models import Sensor, Device  # ✅ fixed model name
 
-sensor_bp = Blueprint("sensors", __name__)
+sensor_bp = Blueprint("sensors", __name__, url_prefix="/api")
 
 # --------------------------
-# 📘 Get all sensors
+# 📘 Get all sensor data
 # --------------------------
 @sensor_bp.route("/sensors", methods=["GET"])
 def get_sensors():
@@ -16,45 +15,47 @@ def get_sensors():
         device = Device.query.get(s.device_id)
         result.append({
             "id": s.id,
-            "name": s.name,
-            "friendly_name": s.friendly_name,
             "device_id": s.device_id,
             "device_name": device.name if device else None,
-            "unit": getattr(s, "unit", None),
-            "type": getattr(s, "type", None),
-            "created_at": getattr(s, "created_at", None)
+            "topic": s.topic,
+            "payload": s.payload,
+            "temperature": s.temperature,
+            "humidity": s.humidity,
+            "pressure": s.pressure,
+            "timestamp": s.timestamp.isoformat() if s.timestamp else None
         })
     return jsonify(result), 200
 
 
 # --------------------------
-# 📗 Add a new sensor
+# 📗 Add new sensor data
 # --------------------------
 @sensor_bp.route("/sensors", methods=["POST"])
 def create_sensor():
     data = request.get_json()
-    required = ["name", "friendly_name", "device_id"]
+    required = ["device_id"]
 
     if not all(k in data for k in required):
         return jsonify({"error": "Missing required fields"}), 400
 
-    sensor = Sensor(
-        name=data["name"],
-        friendly_name=data["friendly_name"],
+    new_sensor = Sensor(
         device_id=data["device_id"],
-        type=data.get("type"),
-        unit=data.get("unit")
+        topic=data.get("topic"),
+        payload=data.get("payload"),
+        temperature=data.get("temperature"),
+        humidity=data.get("humidity"),
+        pressure=data.get("pressure")
     )
 
-    db.session.add(sensor)
+    db.session.add(new_sensor)
     db.session.commit()
 
-    socketio.emit("sensor_added", {"id": sensor.id, "name": sensor.name})
-    return jsonify({"message": "Sensor added successfully", "id": sensor.id}), 201
+    socketio.emit("sensor_added", {"id": new_sensor.id, "device_id": new_sensor.device_id})
+    return jsonify({"message": "Sensor data added successfully", "id": new_sensor.id}), 201
 
 
 # --------------------------
-# 📙 Update a sensor
+# 📙 Update a sensor record
 # --------------------------
 @sensor_bp.route("/sensors/<int:sensor_id>", methods=["PUT"])
 def update_sensor(sensor_id):
@@ -62,31 +63,31 @@ def update_sensor(sensor_id):
     sensor = Sensor.query.get(sensor_id)
 
     if not sensor:
-        return jsonify({"error": "Sensor not found"}), 404
+        return jsonify({"error": "Sensor data not found"}), 404
 
-    sensor.name = data.get("name", sensor.name)
-    sensor.friendly_name = data.get("friendly_name", sensor.friendly_name)
-    sensor.device_id = data.get("device_id", sensor.device_id)
-    sensor.unit = data.get("unit", sensor.unit)
-    sensor.type = data.get("type", sensor.type)
+    sensor.topic = data.get("topic", sensor.topic)
+    sensor.payload = data.get("payload", sensor.payload)
+    sensor.temperature = data.get("temperature", sensor.temperature)
+    sensor.humidity = data.get("humidity", sensor.humidity)
+    sensor.pressure = data.get("pressure", sensor.pressure)
 
     db.session.commit()
-    socketio.emit("sensor_updated", {"id": sensor.id, "name": sensor.name})
-    return jsonify({"message": "Sensor updated successfully"}), 200
+    socketio.emit("sensor_updated", {"id": sensor.id})
+    return jsonify({"message": "Sensor data updated successfully"}), 200
 
 
 # --------------------------
-# 📕 Delete a sensor
+# 📕 Delete a sensor record
 # --------------------------
 @sensor_bp.route("/sensors/<int:sensor_id>", methods=["DELETE"])
 def delete_sensor(sensor_id):
     sensor = Sensor.query.get(sensor_id)
 
     if not sensor:
-        return jsonify({"error": "Sensor not found"}), 404
+        return jsonify({"error": "Sensor data not found"}), 404
 
     db.session.delete(sensor)
     db.session.commit()
 
     socketio.emit("sensor_deleted", {"id": sensor.id})
-    return jsonify({"message": "Sensor deleted successfully"}), 200
+    return jsonify({"message": "Sensor data deleted successfully"}), 200

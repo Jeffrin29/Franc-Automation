@@ -17,7 +17,7 @@ const sections = [
   {
     title: 'Dashboard',
     items: [
-      { name: 'Dashboard', icon: BarChart3, path: '/' },
+      { name: 'Dashboard', icon: BarChart3, path: '/dashboard' },
       { name: 'Dashboard Builder', icon: LayoutDashboard, path: '/dashboard-builder' },
       { name: 'Dashboards', icon: FolderKanban, path: '/dashboards' },
     ],

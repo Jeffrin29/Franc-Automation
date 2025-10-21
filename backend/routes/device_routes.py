@@ -1,10 +1,11 @@
 from flask import Blueprint, request, jsonify, current_app
-from extensions import db
+from extensions import db, socketio
 from models import Device
 from datetime import datetime
+from utils.audit import log_info, emit_event
+from subprocess import run
 
 device_bp = Blueprint("device_bp", __name__)
-
 
 # -------------------------------
 # 🔹 Add new device
@@ -19,7 +20,6 @@ def add_device():
     if not name:
         return jsonify({"error": "Device name is required"}), 400
 
-    # Prevent duplicates
     if Device.query.filter_by(name=name).first():
         return jsonify({"error": "Device already exists"}), 409
 
@@ -42,8 +42,7 @@ def add_device():
     db.session.add(device)
     db.session.commit()
 
-    # ✅ Auto-run migration when new device added
-    from subprocess import run
+    # Auto-run migration after device creation
     try:
         print("[AUTO-MIGRATION] Running after device creation...")
         run(["flask", "db", "migrate", "-m", "device_added"], check=False)
@@ -52,7 +51,10 @@ def add_device():
     except Exception as e:
         print(f"[AUTO-MIGRATION] ⚠️ Migration failed: {e}")
 
-    current_app.logger.info(f"[API] Device added: {device.name} (id={device.id})")
+    # Log & emit
+    log_info(f"Device added: {device.name} (id={device.id})")
+    emit_event("device_added", device.to_dict())
+
     return jsonify({"message": "Device added", "device": device.to_dict()}), 201
 
 
@@ -62,7 +64,10 @@ def add_device():
 @device_bp.route("/devices", methods=["GET"])
 def list_devices():
     devices = Device.query.order_by(Device.created_at.desc()).all()
-    return jsonify([d.to_dict() for d in devices]), 200
+    device_list = [d.to_dict() for d in devices]
+    log_info(f"Devices listed: count={len(device_list)}")
+    emit_event("devices_listed", {"count": len(device_list), "devices": device_list})
+    return jsonify(device_list), 200
 
 
 # -------------------------------
@@ -73,7 +78,6 @@ def update_device(device_id):
     device = Device.query.get_or_404(device_id)
     data = request.get_json(silent=True) or {}
 
-    # Map frontend-friendly keys to model attributes
     mapping = {
         "clientId": "client_id",
         "mqttVersion": "mqtt_version",
@@ -90,7 +94,9 @@ def update_device(device_id):
     device.updated_at = datetime.utcnow()
     db.session.commit()
 
-    current_app.logger.info(f"[API] Device updated: id={device.id}")
+    log_info(f"Device updated: id={device.id}")
+    emit_event("device_updated", device.to_dict())
+
     return jsonify({"message": "Device updated", "device": device.to_dict()}), 200
 
 
@@ -103,5 +109,7 @@ def delete_device(device_id):
     db.session.delete(device)
     db.session.commit()
 
-    current_app.logger.info(f"[API] Device deleted: id={device_id}")
+    log_info(f"Device deleted: id={device_id}")
+    emit_event("device_deleted", {"id": device_id})
+
     return jsonify({"message": "Device deleted"}), 200
