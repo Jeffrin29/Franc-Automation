@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { DashboardLayout } from "@/components/dashboard/DashboardLayout";
 import { MetricCard, CircularGauge, RealtimeChart } from "@/pages/Dashboard";
 import { useLiveData } from "@/hooks/useLiveData";
@@ -7,7 +7,7 @@ import { Thermometer, Droplets, Gauge, Wifi } from "lucide-react";
 
 const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:5000";
 
-// ✅ Format to India time
+// ✅ Format India time
 function formatIndiaTime(value?: string | number | Date) {
   if (!value) return "—";
   const date = new Date(value);
@@ -25,28 +25,47 @@ function formatIndiaTime(value?: string | number | Date) {
 
 const DashboardPage = () => {
   const { currentData, chartData } = useLiveData();
-  const [lastUpdated, setLastUpdated] = useState<string>(formatIndiaTime());
-  const [temperature, setTemperature] = useState<number>(0);
-  const [humidity, setHumidity] = useState<number>(0);
-  const [pressure, setPressure] = useState<number>(0);
+  const [lastUpdated, setLastUpdated] = useState<string>("—");
+  const [temperature, setTemperature] = useState<number | null>(null);
+  const [humidity, setHumidity] = useState<number | null>(null);
+  const [pressure, setPressure] = useState<number | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(false);
 
-  // 🔁 Update on live socket data
+  // Track last message time for anti-flicker
+  const lastMessageTimeRef = useRef<number>(Date.now());
+  const offlineTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // 🔁 Update from socket data only if device is connected
   useEffect(() => {
     if (currentData) {
-      setTemperature(currentData?.temperature ?? 0);
-      setHumidity(currentData?.humidity ?? 0);
-      setPressure(currentData?.pressure ?? 0);
-      setIsOnline(
+      const online =
         currentData?.deviceConnected ||
-          currentData?.isConnected ||
-          (currentData?.devicesOnline ?? 0) > 0
-      );
-      setLastUpdated(formatIndiaTime(currentData?.timestamp || new Date()));
+        currentData?.isConnected ||
+        (currentData?.devicesOnline ?? 0) > 0;
+
+      // Track time of last valid packet
+      if (online) {
+        lastMessageTimeRef.current = Date.now();
+
+        if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
+        offlineTimerRef.current = setTimeout(() => {
+          const diff = Date.now() - lastMessageTimeRef.current;
+          if (diff > 8000) setIsOnline(false);
+        }, 9000);
+      }
+
+      setIsOnline(Boolean(online));
+
+      if (online) {
+        setTemperature(currentData?.temperature ?? 0);
+        setHumidity(currentData?.humidity ?? 0);
+        setPressure(currentData?.pressure ?? 0);
+        setLastUpdated(formatIndiaTime(currentData?.timestamp || new Date()));
+      }
     }
   }, [currentData]);
 
-  // 🔁 Fallback polling every 2s (ensures stable refresh even if socket drops)
+  // 🔁 Fallback polling — triggers only if socket stops sending for 8s
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -54,19 +73,38 @@ const DashboardPage = () => {
         const data = await res.json();
         if (!data) return;
 
-        setTemperature(data.temperature ?? temperature);
-        setHumidity(data.humidity ?? humidity);
-        setPressure(data.pressure ?? pressure);
-        setIsOnline(data.status === "online" || true);
-        setLastUpdated(formatIndiaTime(data.timestamp || new Date()));
+        const online = data.status === "online" || (data.devices_online ?? 0) > 0;
+
+        // Track polling timestamp
+        if (online) {
+          lastMessageTimeRef.current = Date.now();
+
+          if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
+          offlineTimerRef.current = setTimeout(() => {
+            const diff = Date.now() - lastMessageTimeRef.current;
+            if (diff > 8000) setIsOnline(false);
+          }, 9000);
+        }
+
+        setIsOnline(online);
+
+        if (online) {
+          setTemperature(data.temperature ?? temperature ?? 0);
+          setHumidity(data.humidity ?? humidity ?? 0);
+          setPressure(data.pressure ?? pressure ?? 0);
+          setLastUpdated(formatIndiaTime(data.timestamp || new Date()));
+        }
       } catch (err) {
         console.error("[DashboardPage polling error]", err);
       }
     }, 2000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
+    };
   }, [temperature, humidity, pressure]);
 
-  // ⏱ Keep showing system time in footer
+  // ⏱ Keep showing system time
   const [systemTime, setSystemTime] = useState<string>(formatIndiaTime());
   useEffect(() => {
     const timer = setInterval(() => setSystemTime(formatIndiaTime()), 2000);
@@ -74,15 +112,25 @@ const DashboardPage = () => {
   }, []);
 
   // ✅ Status helpers
-  const getTemperatureStatus = (temp: number) =>
-    temp > 35 ? "critical" : temp > 30 ? "warning" : "good";
+  const getTemperatureStatus = (temp: number | null) =>
+    !isOnline
+      ? "critical"
+      : temp && temp > 35
+      ? "critical"
+      : temp && temp > 30
+      ? "warning"
+      : "good";
 
-  const getHumidityStatus = (humidity: number) =>
-    humidity > 70 || humidity < 30 ? "warning" : "good";
+  const getHumidityStatus = (hum: number | null) =>
+    !isOnline
+      ? "critical"
+      : hum && (hum > 70 || hum < 30)
+      ? "warning"
+      : "good";
 
-  // ✅ Percentage for gauges
-  const temperaturePercent = Math.min(100, (temperature / 50) * 100);
-  const humidityPercent = Math.min(100, humidity);
+  // ✅ Gauges
+  const temperaturePercent = Math.min(100, ((temperature ?? 0) / 50) * 100);
+  const humidityPercent = Math.min(100, humidity ?? 0);
 
   return (
     <DashboardLayout>
@@ -117,24 +165,24 @@ const DashboardPage = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <MetricCard
             title="Temperature"
-            value={temperature ? temperature.toFixed(1) : "—"}
+            value={temperature !== null && isOnline ? temperature.toFixed(1) : "—"}
             unit="°C"
             icon={<Thermometer className="w-5 h-5 text-primary" />}
             status={getTemperatureStatus(temperature)}
           />
           <MetricCard
             title="Humidity"
-            value={humidity ? humidity.toFixed(1) : "—"}
+            value={humidity !== null && isOnline ? humidity.toFixed(1) : "—"}
             unit="%"
             icon={<Droplets className="w-5 h-5 text-primary" />}
             status={getHumidityStatus(humidity)}
           />
           <MetricCard
             title="Pressure"
-            value={pressure ? pressure.toFixed(2) : "—"}
+            value={pressure !== null && isOnline ? pressure.toFixed(2) : "—"}
             unit="hPa"
             icon={<Gauge className="w-5 h-5 text-primary" />}
-            status="good"
+            status={isOnline ? "good" : "critical"}
           />
           <MetricCard
             title="Devices Online"
@@ -147,7 +195,7 @@ const DashboardPage = () => {
         {/* ---------- Chart + Gauges ---------- */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
-            <RealtimeChart data={chartData} />
+            <RealtimeChart data={isOnline ? chartData : []} />
           </div>
 
           <div className="flex flex-col gap-6">
@@ -157,10 +205,10 @@ const DashboardPage = () => {
               </h3>
               <CircularGauge
                 title="Temperature"
-                value={temperature}
+                value={isOnline ? temperature ?? 0 : 0}
                 percentage={temperaturePercent}
                 unit="°C"
-                label={`${Math.round(temperaturePercent)}%`}
+                label={isOnline ? `${Math.round(temperaturePercent)}%` : "Offline"}
               />
             </div>
 
@@ -170,10 +218,10 @@ const DashboardPage = () => {
               </h3>
               <CircularGauge
                 title="Humidity"
-                value={humidity}
+                value={isOnline ? humidity ?? 0 : 0}
                 percentage={humidityPercent}
                 unit="%"
-                label={`${Math.round(humidityPercent)}%`}
+                label={isOnline ? `${Math.round(humidityPercent)}%` : "Offline"}
               />
             </div>
           </div>
@@ -182,6 +230,11 @@ const DashboardPage = () => {
         {/* ---------- Footer ---------- */}
         <div className="text-center text-gray-400 text-xs pt-6 border-t border-gray-800">
           <p>Last refreshed: {systemTime}</p>
+          {!isOnline && (
+            <p className="italic text-gray-500 mt-1">
+              No active device connection — waiting for data...
+            </p>
+          )}
         </div>
       </div>
     </DashboardLayout>

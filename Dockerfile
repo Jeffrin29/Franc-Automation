@@ -56,4 +56,4 @@ ENV FLASK_ENV=production
 
 # ✅ PRELOAD EVENTLET before Flask starts
 # This ensures eventlet.monkey_patch() happens before imports
-CMD ["python", "-c", "import eventlet; eventlet.monkey_patch(all=True); import backend.app"]
+CMD ["python", "-m", "backend.app"]

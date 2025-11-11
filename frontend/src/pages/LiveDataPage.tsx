@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card } from "@/components/ui/card";
 import {
   Table,
@@ -16,6 +16,7 @@ import { Wifi, WifiOff } from "lucide-react";
 
 const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:5000";
 
+// ✅ Helper: format India time
 function formatIndiaTime(value?: string | number | Date) {
   if (!value) return "--";
   const date = new Date(value);
@@ -32,56 +33,94 @@ function formatIndiaTime(value?: string | number | Date) {
 }
 
 export default function LiveDataPage() {
-  const { tableData, connected, isDeviceConnected, currentData } = useLiveData();
+  // ✅ Specify mode "live" so hook enables safe API polling
+  const { tableData, isDeviceConnected, currentData } = useLiveData("live");
+
   const [lastUpdated, setLastUpdated] = useState<string>("--");
   const [localTable, setLocalTable] = useState<SensorData[]>([]);
+  const [isOnline, setIsOnline] = useState(false);
 
-  // ✅ Keep UI table synced with hook updates
-  useEffect(() => {
-    setLocalTable(tableData);
-  }, [tableData]);
+  // Track update and handle fallback offline status
+  const lastUpdateRef = useRef<number>(Date.now());
+  const offlineTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // ✅ Update last updated time
+  // ✅ Sync socket updates directly from hook data
   useEffect(() => {
-    if (currentData?.timestamp && currentData.deviceConnected) {
-      setLastUpdated(formatIndiaTime(currentData.timestamp));
+    if (tableData.length > 0 && isDeviceConnected) {
+      setLocalTable(tableData);
+      setIsOnline(true);
+      lastUpdateRef.current = Date.now();
+
+      // Reset timer for offline detection
+      if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
+      offlineTimerRef.current = setTimeout(() => {
+        const diff = Date.now() - lastUpdateRef.current;
+        if (diff > 8000) setIsOnline(false);
+      }, 9000);
     }
-  }, [currentData]);
+  }, [tableData, isDeviceConnected]);
 
-  // ✅ Fallback polling every 2 seconds (if socket data misses)
+  // ✅ Update last updated label when live data changes
+  useEffect(() => {
+    if (currentData?.timestamp && isDeviceConnected) {
+      setLastUpdated(formatIndiaTime(currentData.timestamp));
+      lastUpdateRef.current = Date.now();
+    }
+  }, [currentData, isDeviceConnected]);
+
+  // ✅ Add safe polling fallback — handles missed socket packets
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`${API}/api/data/latest`);
+        if (!res.ok) return;
         const data = await res.json();
         if (!data) return;
+
+        const online = data.status === "online" || (data.devices_online ?? 0) > 0;
+        if (online) {
+          setIsOnline(true);
+          lastUpdateRef.current = Date.now();
+        }
+
         const formatted: SensorData = {
-          device_name: data.device_name || currentData.device_name || "Unknown Device",
-          temperature: data.temperature ?? null,
-          humidity: data.humidity ?? null,
-          pressure: data.pressure ?? null,
-          status: data.status || "online",
+          device_name: data.device_name || "—",
+          temperature: online ? data.temperature ?? null : null,
+          humidity: online ? data.humidity ?? null : null,
+          pressure: online ? data.pressure ?? null : null,
+          status: online ? "online" : "offline",
           timestamp: formatIndiaTime(data.timestamp || new Date()),
-          deviceConnected: true,
-          isConnected: true,
+          deviceConnected: online,
+          isConnected: online,
           devicesOnline: data.devices_online || 1,
           device_id: data.device_id,
         };
 
-        // Append if timestamp is new
         setLocalTable((prev) => {
           if (prev.length === 0 || prev[0].timestamp !== formatted.timestamp) {
             return [formatted, ...prev.slice(0, 19)];
           }
           return prev;
         });
+
+        // Auto mark offline after 8 seconds if no updates
+        if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
+        offlineTimerRef.current = setTimeout(() => {
+          const diff = Date.now() - lastUpdateRef.current;
+          if (diff > 8000) setIsOnline(false);
+        }, 9000);
       } catch (err) {
         console.error("[LiveDataPage] polling error:", err);
       }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [currentData]);
+    }, 5000); // Poll every 5 seconds instead of 2 to reduce flicker
 
+    return () => {
+      clearInterval(interval);
+      if (offlineTimerRef.current) clearTimeout(offlineTimerRef.current);
+    };
+  }, []);
+
+  // ✅ Helper: status badge color mapping
   const getStatusBadge = (status: string) => {
     const variants: Record<string, string> = {
       online: "bg-metric-good text-foreground",
@@ -95,8 +134,10 @@ export default function LiveDataPage() {
     );
   };
 
+  // ✅ Render UI
   return (
     <DashboardLayout>
+      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold">📡 Live Device Data</h1>
@@ -106,7 +147,7 @@ export default function LiveDataPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          {connected && isDeviceConnected ? (
+          {isOnline ? (
             <>
               <Wifi className="w-5 h-5 text-metric-good" />
               <span className="text-sm text-muted-foreground">Connected</span>
@@ -114,12 +155,15 @@ export default function LiveDataPage() {
           ) : (
             <>
               <WifiOff className="w-5 h-5 text-metric-critical" />
-              <span className="text-sm text-muted-foreground">Disconnected</span>
+              <span className="text-sm text-muted-foreground">
+                Disconnected
+              </span>
             </>
           )}
         </div>
       </div>
 
+      {/* Table Section */}
       <Card className="bg-gradient-card border-border">
         <div className="p-6 border-b border-border flex justify-between items-center">
           <h3 className="text-lg font-semibold">Recent Sensor Readings</h3>
@@ -140,37 +184,40 @@ export default function LiveDataPage() {
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
+
             <TableBody>
-              {localTable.length > 0 ? (
-                localTable.map((entry: SensorData, idx: number) => (
+              {isOnline && localTable.length > 0 ? (
+                localTable.map((entry, idx) => (
                   <TableRow key={idx}>
                     <TableCell className="font-mono text-sm">
                       {formatIndiaTime(entry.timestamp)}
                     </TableCell>
-                    <TableCell>{entry.device_name || currentData.device_name || "—"}</TableCell>
+                    <TableCell>{entry.device_name || "—"}</TableCell>
                     <TableCell>
-                      {entry.temperature !== undefined
+                      {entry.temperature != null
                         ? `${entry.temperature}°C`
                         : "--"}
                     </TableCell>
                     <TableCell>
-                      {entry.humidity !== undefined
+                      {entry.humidity != null
                         ? `${entry.humidity}%`
                         : "--"}
                     </TableCell>
                     <TableCell>
-                      {entry.pressure !== undefined
+                      {entry.pressure != null
                         ? `${entry.pressure} hPa`
                         : "--"}
                     </TableCell>
-                    <TableCell>{getStatusBadge(entry.status || "offline")}</TableCell>
+                    <TableCell>
+                      {getStatusBadge(entry.status || "offline")}
+                    </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-6">
                     <p className="text-muted-foreground">
-                      {connected
+                      {isOnline
                         ? "Waiting for live data..."
                         : "No active device connection."}
                     </p>

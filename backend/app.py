@@ -1,23 +1,39 @@
 # ==========================================================
-# Must patch BEFORE any Flask/threading/db imports
+# Franc Automation Backend Entry Point (Eventlet-Safe)
 # ==========================================================
-#import eventlet
-#eventlet.monkey_patch()
+# NOTE:
+#  - eventlet.monkey_patch() MUST run before importing ANY other stdlib/network/thread/db modules.
+#  - We disable thread patching because threading.RLock() is used manually below.
+# ==========================================================
 
 import os
+import warnings
+
+# Suppress only eventlet warnings — not all runtime warnings globally
+warnings.filterwarnings("ignore", message=".*monkey_patching.*")
+
+# 🧩 Patch eventlet FIRST — before importing anything else
+import eventlet
+eventlet.monkey_patch(socket=True, select=True, time=True, os=True, thread=False)
+
+# ----------------------------------------------------------
+# Standard Library Imports (after patch)
+# ----------------------------------------------------------
 import threading
 import tempfile
 import subprocess
 import time
+
+# ----------------------------------------------------------
+# Flask / App Imports (after eventlet patch)
+# ----------------------------------------------------------
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
-from flask_migrate import Migrate
+from flask_migrate import Migrate, init as migrate_init
 from backend.extensions import db, socketio
 from backend.utils.audit import log_info
 from backend.models import *
-# ✅ Manual MQTT control only
-from backend.mqtt_service import start_mqtt_client, stop_mqtt_client
-from backend.mqtt_service import init_mqtt_system
+from backend.mqtt_service import start_mqtt_client, stop_mqtt_client, init_mqtt_system
 
 # ==========================================================
 # Inter-process file lock for MQTT
@@ -99,6 +115,18 @@ def create_app():
     socketio.init_app(app, cors_allowed_origins="*", async_mode="eventlet")
 
     # ==========================================================
+    # Ensure migrations folder exists
+    # ==========================================================
+    migrations_path = os.path.join(app.root_path, "migrations")
+    if not os.path.exists(migrations_path):
+        with app.app_context():
+            try:
+                migrate_init()
+                log_info("[MIGRATION] Initialized new migrations folder.")
+            except Exception:
+                pass
+
+    # ==========================================================
     # Register Blueprints
     # ==========================================================
     from backend.routes.device_routes import device_bp
@@ -108,6 +136,7 @@ def create_app():
     from backend.routes.sensor_routes import sensor_bp
     from backend.routes.user_routes import user_bp
     from backend.routes.role_routes import role_bp
+    from backend.routes.dashboard_routes import dashboard_bp
 
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
     app.register_blueprint(device_bp, url_prefix="/api")
@@ -116,6 +145,7 @@ def create_app():
     app.register_blueprint(sensor_bp, url_prefix="/api")
     app.register_blueprint(user_bp, url_prefix="/api/users")
     app.register_blueprint(role_bp, url_prefix="/api/users")
+    app.register_blueprint(dashboard_bp)
 
     # ==========================================================
     # Serve React Frontend Build (production)
@@ -142,9 +172,11 @@ def create_app():
 # Auto-Migration Helper
 # ==========================================================
 def auto_migrate():
-    """Automatically apply migrations for SQLite"""
+    """Automatically initialize and apply migrations for SQLite"""
     try:
         log_info("[MIGRATION] Checking migrations...")
+        if not os.path.exists(os.path.join(os.path.dirname(__file__), "migrations")):
+            subprocess.run(["flask", "db", "init"], check=False)
         subprocess.run(["flask", "db", "migrate", "-m", "auto migration"], check=False)
         subprocess.run(["flask", "db", "upgrade"], check=False)
         log_info("[MIGRATION] ✅ Database migration successful!")
@@ -171,7 +203,7 @@ if __name__ == "__main__":
 
     with app.app_context():
         auto_migrate()
-        init_mqtt_system()
+        init_mqtt_system()  # sets all devices offline
 
     # Prevent duplicate MQTT threads
     lock_path = os.path.join(tempfile.gettempdir(), "mqtt_init.lock")
@@ -186,10 +218,8 @@ if __name__ == "__main__":
 
     log_info("🚀 Franc Automation Backend + Frontend running with Eventlet at http://0.0.0.0:5000")
 
-    socketio.run(
+    # ✅ use eventlet’s WSGI server (stable for socketio)
+    eventlet.wsgi.server(
+        eventlet.listen(("0.0.0.0", int(os.environ.get("PORT", 5000)))),
         app,
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
-        debug=False,
-        use_reloader=False,
     )

@@ -1,5 +1,10 @@
+# ==========================================================
+# backend/models.py — Unified ORM Models (Users + Devices + Sensors)
+# ==========================================================
 from datetime import datetime
 from backend.extensions import db
+from pytz import timezone
+from sqlalchemy import JSON
 
 # ==========================================================
 # Association Tables
@@ -9,7 +14,7 @@ role_permissions = db.Table(
     db.metadata,
     db.Column("role_id", db.Integer, db.ForeignKey("roles.id"), primary_key=True),
     db.Column("permission_id", db.Integer, db.ForeignKey("permissions.id"), primary_key=True),
-    extend_existing=True
+    extend_existing=True,
 )
 
 user_roles = db.Table(
@@ -103,6 +108,7 @@ class Device(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), unique=True, nullable=False)
+    broker_url = db.Column(db.String(255), default="broker.hivemq.com")
     protocol = db.Column(db.String(20))
     host = db.Column(db.String(120))
     port = db.Column(db.Integer, default=1883)
@@ -118,18 +124,18 @@ class Device(db.Model):
     is_connected = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    # ✅ Fix: Add last_seen column
     last_seen = db.Column(db.DateTime, nullable=True)
 
-    sensors = db.relationship("Sensor", backref="device", lazy=True, cascade="all, delete-orphan")
+    # 🔗 Relationship to sensors
+    sensors = db.relationship("Sensor", back_populates="device", cascade="all, delete-orphan")
 
     def to_dict(self):
         return {
             "id": self.id,
-            "device_id": self.id,
             "name": self.name,
-            "device_name": self.name,
+            "broker_url": self.broker_url,
+            "status": self.status,
+            "is_connected": self.is_connected,
             "protocol": self.protocol,
             "host": self.host,
             "port": self.port,
@@ -139,31 +145,44 @@ class Device(db.Model):
             "keep_alive": self.keep_alive,
             "auto_reconnect": self.auto_reconnect,
             "reconnect_period": self.reconnect_period,
-            "status": self.status,
             "enable_tls": self.enable_tls,
-            "is_connected": self.is_connected,
-            "created_at": self.created_at.isoformat(),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "last_seen": self.last_seen.isoformat() if self.last_seen else None,  # ✅ Safely handle missing value
+            "last_seen": self.last_seen.isoformat() if self.last_seen else None,
         }
 
 # ==========================================================
-# Sensor Model (for MQTT & dashboard)
+# Sensor Model (used for MQTT + Dashboard + Live Data)
 # ==========================================================
+INDIA_TZ = timezone("Asia/Kolkata")
+
 class Sensor(db.Model):
     __tablename__ = "sensors"
-    __table_args__ = {"extend_existing": True}
 
     id = db.Column(db.Integer, primary_key=True)
     device_id = db.Column(db.Integer, db.ForeignKey("devices.id"), nullable=False)
-    topic = db.Column(db.String(255))
-    payload = db.Column(db.Text)
+    topic = db.Column(db.String(255))       # ✅ added
+    payload = db.Column(db.Text)            # ✅ added
     temperature = db.Column(db.Float)
     humidity = db.Column(db.Float)
     pressure = db.Column(db.Float)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    raw_data = db.Column(JSON)  # ✅ keeps your structured MQTT payload (JSON)
+
+    # Relationship back to device
+    device = db.relationship("Device", back_populates="sensors")
 
     def to_dict(self):
+        ts = self.timestamp
+        try:
+            if ts and ts.tzinfo is None:
+                from pytz import utc
+                ts = utc.localize(ts)
+            ts_india = ts.astimezone(INDIA_TZ) if ts else None
+            ts_iso = ts_india.isoformat() if ts_india else None
+        except Exception:
+            ts_iso = str(ts)
+
         return {
             "id": self.id,
             "device_id": self.device_id,
@@ -172,7 +191,8 @@ class Sensor(db.Model):
             "temperature": self.temperature,
             "humidity": self.humidity,
             "pressure": self.pressure,
-            "timestamp": self.timestamp.isoformat(),
+            "timestamp": ts_iso,
+            "raw_data": self.raw_data,
         }
 
 # ==========================================================

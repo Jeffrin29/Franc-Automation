@@ -1,6 +1,5 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import { io } from "socket.io-client";
 import { DashboardLayout } from "@/components/dashboard/DashboardLayout";
 import {
   LineChart,
@@ -11,8 +10,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-
-const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:5000";
+import { useLiveData } from "@/hooks/useLiveData";
 
 // ---------------- METRIC CARD ----------------
 interface MetricCardProps {
@@ -37,7 +35,6 @@ const MetricCard: React.FC<MetricCardProps> = ({
     warning: "text-yellow-400",
     critical: "text-red-500",
   };
-
   return (
     <div
       className={`p-5 rounded-2xl shadow-md bg-gradient-to-br ${
@@ -123,7 +120,9 @@ const CircularGauge: React.FC<CircularGaugeProps> = ({
           strokeDashoffset={offset}
           strokeLinecap="round"
           fill="none"
-          style={{ transition: "stroke-dashoffset 0.5s ease, stroke 0.5s ease" }}
+          style={{
+            transition: "stroke-dashoffset 0.5s ease, stroke 0.5s ease",
+          }}
         />
         <text
           x="60"
@@ -151,12 +150,7 @@ const CircularGauge: React.FC<CircularGaugeProps> = ({
 };
 
 // ---------------- REALTIME CHART ----------------
-interface RealtimeChartProps {
-  title?: string;
-  data: any[];
-}
-
-const RealtimeChart: React.FC<RealtimeChartProps> = ({ data }) => (
+const RealtimeChart = ({ data }: { data: any[] }) => (
   <div className="bg-[#161b22] p-5 rounded-2xl shadow-md">
     <h3 className="text-white text-lg font-semibold mb-4">
       Real-Time Sensor Data
@@ -195,78 +189,27 @@ const RealtimeChart: React.FC<RealtimeChartProps> = ({ data }) => (
 
 // ---------------- MAIN DASHBOARD ----------------
 export default function Dashboard() {
-  const [temperature, setTemperature] = useState(0);
-  const [humidity, setHumidity] = useState(0);
-  const [pressure, setPressure] = useState(0);
-  const [devicesOnline, setDevicesOnline] = useState(0);
-  const [chartData, setChartData] = useState<any[]>([]);
-  const [lastUpdate, setLastUpdate] = useState<string>("--");
-  const [connected, setConnected] = useState(false);
+  const { currentData, chartData, isDeviceConnected } = useLiveData("dashboard");
+
+  const temperature = currentData?.temperature ?? null;
+  const humidity = currentData?.humidity ?? null;
+  const pressure = currentData?.pressure ?? null;
+  const devicesOnline = currentData?.devicesOnline ?? 0;
+  const lastUpdate = currentData?.timestamp ?? "--";
+  const isOnline = isDeviceConnected;
+
   const [currentTime, setCurrentTime] = useState<string>("--");
 
   useEffect(() => {
-    const socket = io(API, {
-      transports: ["websocket", "polling"],
-      reconnection: true,
-    });
-
-    socket.on("connect", () => {
-      console.log("[Socket] ✅ Connected");
-      setConnected(true);
-    });
-
-    socket.on("disconnect", () => {
-      console.log("[Socket] ❌ Disconnected");
-      setConnected(false);
-    });
-
-    // 🔥 Live socket stream
-    socket.on("dashboard_update", (data) => {
-      updateFromData(data);
-    });
-
-    // 🔁 Fallback polling every 2 seconds
-    const interval = setInterval(async () => {
+    const timer = setInterval(() => {
       setCurrentTime(
         new Date().toLocaleTimeString("en-IN", {
           timeZone: "Asia/Kolkata",
           hour12: true,
         })
       );
-      try {
-        const res = await fetch(`${API}/api/data/latest`);
-        const latest = await res.json();
-        if (latest?.temperature !== undefined) updateFromData(latest);
-      } catch (err) {
-        console.error("[Dashboard Polling Error]", err);
-      }
     }, 2000);
-
-    const updateFromData = (data: any) => {
-      setTemperature(data?.temperature ?? 0);
-      setHumidity(data?.humidity ?? 0);
-      setPressure(data?.pressure ?? 0);
-      setDevicesOnline(data?.devices_online ?? data?.devicesOnline ?? 0);
-      setLastUpdate(
-        new Date().toLocaleString("en-IN", {
-          timeZone: "Asia/Kolkata",
-          hour12: true,
-        })
-      );
-      setChartData((prev) => [
-        ...prev.slice(-19),
-        {
-          timestamp: new Date().toLocaleTimeString("en-IN", { hour12: true }),
-          temperature: data?.temperature ?? 0,
-          humidity: data?.humidity ?? 0,
-        },
-      ]);
-    };
-
-    return () => {
-      clearInterval(interval);
-      socket.disconnect();
-    };
+    return () => clearInterval(timer);
   }, []);
 
   return (
@@ -276,49 +219,71 @@ export default function Dashboard() {
           {/* Header */}
           <div className="flex justify-between items-center">
             <div>
-              <h1 className="text-2xl font-semibold text-white">Dashboard Overview</h1>
+              <h1 className="text-2xl font-semibold text-white">
+                Dashboard Overview
+              </h1>
               <div className="flex items-center gap-3 text-sm mt-1">
-                {connected ? (
+                {isOnline ? (
                   <div className="flex items-center text-green-500 gap-1">
                     <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                    <span>🟢 Connected</span>
+                    <span>🟢 Online</span>
                   </div>
                 ) : (
                   <div className="flex items-center text-red-500 gap-1">
                     <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                    <span>🔴 Disconnected</span>
+                    <span>🔴 Offline</span>
                   </div>
                 )}
                 <span className="text-gray-500">|</span>
                 <span className="text-gray-400">{currentTime}</span>
               </div>
             </div>
-            <span className="text-sm text-gray-400">Last updated: {lastUpdate}</span>
+            <span className="text-sm text-gray-400">
+              Last updated: {lastUpdate}
+            </span>
           </div>
 
           {/* Metric Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             <MetricCard
               title="Temperature"
-              value={temperature.toFixed(1)}
+              value={
+                temperature !== null && isOnline ? temperature.toFixed(1) : "--"
+              }
               unit="°C"
               icon="🌡️"
               status={
-                temperature > 35 ? "critical" : temperature > 30 ? "warning" : "good"
+                !isOnline
+                  ? "critical"
+                  : temperature && temperature > 35
+                  ? "critical"
+                  : temperature && temperature > 30
+                  ? "warning"
+                  : "good"
               }
               color="from-blue-500 to-blue-700"
             />
             <MetricCard
               title="Humidity"
-              value={humidity.toFixed(1)}
+              value={
+                humidity !== null && isOnline ? humidity.toFixed(1) : "--"
+              }
               unit="%"
               icon="💧"
-              status={humidity > 70 ? "warning" : "good"}
+              status={
+                !isOnline
+                  ? "critical"
+                  : humidity && humidity > 70
+                  ? "warning"
+                  : "good"
+              }
               color="from-teal-500 to-cyan-600"
             />
             <MetricCard
               title="Pressure"
-              value={pressure.toFixed(2)}
+              value={
+                pressure !== null && isOnline ? pressure.toFixed(2) : "--"
+              }
               unit="hPa"
               icon="⚙️"
               color="from-indigo-500 to-blue-700"
@@ -327,7 +292,7 @@ export default function Dashboard() {
               title="Devices Online"
               value={devicesOnline}
               icon="📡"
-              status={devicesOnline > 0 ? "good" : "critical"}
+              status={isOnline ? "good" : "critical"}
               color="from-green-500 to-emerald-700"
             />
           </div>
@@ -339,11 +304,28 @@ export default function Dashboard() {
             </div>
 
             <div className="bg-[#161b22] p-5 rounded-2xl shadow-md flex flex-col items-center justify-center">
-              <h3 className="text-white text-lg font-semibold mb-4">Sensor Gauges</h3>
+              <h3 className="text-white text-lg font-semibold mb-4">
+                Sensor Gauges
+              </h3>
               <div className="flex flex-col gap-8">
-                <CircularGauge title="Temperature" value={temperature} unit="°C" label="Current Temp" />
-                <CircularGauge title="Humidity" value={humidity} unit="%" label="Current Humidity" />
+                <CircularGauge
+                  title="Temperature"
+                  value={temperature ?? 0}
+                  unit="°C"
+                  label={isOnline ? "Current Temp" : "Offline"}
+                />
+                <CircularGauge
+                  title="Humidity"
+                  value={humidity ?? 0}
+                  unit="%"
+                  label={isOnline ? "Current Humidity" : "Offline"}
+                />
               </div>
+              {!isOnline && (
+                <p className="text-sm text-gray-500 mt-6 italic">
+                  No device connected — awaiting data...
+                </p>
+              )}
             </div>
           </div>
         </main>

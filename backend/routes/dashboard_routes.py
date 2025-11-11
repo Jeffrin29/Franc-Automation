@@ -1,5 +1,5 @@
 # ==========================================================
-# backend/routes/dashboard_routes.py — Unified Dashboard API
+# backend/routes/dashboard_routes.py — Unified Dashboard API (Enhanced)
 # ==========================================================
 from flask import Blueprint, jsonify
 from backend.extensions import db, socketio
@@ -9,9 +9,21 @@ from datetime import datetime
 from pytz import timezone
 from backend.utils.dashboard import emit_dashboard_update
 from backend.mqtt_service import emit_global_mqtt_status
+from backend.utils.audit import log_info
 
 dashboard_bp = Blueprint("dashboard_bp", __name__, url_prefix="/api")
 INDIA_TZ = timezone("Asia/Kolkata")
+
+
+def _num(v, default=0.0):
+    """Ensure a numeric value is returned (float)."""
+    try:
+        if v is None:
+            return float(default)
+        return float(v)
+    except Exception:
+        return float(default)
+
 
 # ==========================================================
 # 📊 Get latest overall dashboard metrics
@@ -19,28 +31,37 @@ INDIA_TZ = timezone("Asia/Kolkata")
 @dashboard_bp.route("/dashboard/current", methods=["GET"])
 def get_current_data():
     """
-    Return the latest sensor data across all devices.
+    Returns the latest sensor data and overall dashboard metrics.
+    Always returns numeric values for temperature/humidity/pressure
+    so frontend code that calls toFixed() won't crash.
     """
     latest = Sensor.query.order_by(desc(Sensor.timestamp)).first()
+    devices_online = Device.query.filter_by(status="online").count()
+    total_devices = Device.query.count()
+
     if not latest:
         return jsonify({
-            "temperature": None,
-            "humidity": None,
-            "pressure": None,
-            "devices_online": 0,
-            "status": "offline"
+            "temperature": 0.0,
+            "humidity": 0.0,
+            "pressure": 0.0,
+            "devices_online": devices_online,
+            "devices_total": total_devices,
+            "status": "offline",
+            "timestamp_iso": "--",
+            "timestamp_ms": 0,
         }), 200
 
-    devices_online = Device.query.filter_by(status="online").count()
-
     data = {
-        "temperature": round(latest.temperature or 0, 1),
-        "humidity": round(latest.humidity or 0, 1),
-        "pressure": round(latest.pressure or 0, 1),
+        "temperature": round(_num(latest.temperature, 0.0), 2),
+        "humidity": round(_num(latest.humidity, 0.0), 2),
+        "pressure": round(_num(latest.pressure, 0.0), 2),
         "devices_online": devices_online,
+        "devices_total": total_devices,
         "status": "online" if devices_online > 0 else "offline",
-        "timestamp": latest.timestamp.astimezone(INDIA_TZ).isoformat(),
+        "timestamp_iso": latest.timestamp.astimezone(INDIA_TZ).isoformat(timespec="milliseconds"),
+        "timestamp_ms": int(latest.timestamp.timestamp() * 1000),
     }
+    log_info(f"[DASHBOARD] 📊 Latest data served: {data}")
     return jsonify(data), 200
 
 
@@ -50,18 +71,21 @@ def get_current_data():
 @dashboard_bp.route("/dashboard/chart", methods=["GET"])
 def get_chart_data():
     """
-    Return the most recent 50 sensor readings (for charts).
+    Returns the 50 most recent sensor readings for dashboard charts.
+    Ensures numeric types for charting.
     """
     records = Sensor.query.order_by(desc(Sensor.timestamp)).limit(50).all()
     chart_data = [
         {
             "timestamp": s.timestamp.astimezone(INDIA_TZ).strftime("%H:%M:%S"),
-            "temperature": s.temperature,
-            "humidity": s.humidity,
-            "pressure": s.pressure,
+            "temperature": _num(s.temperature, 0.0),
+            "humidity": _num(s.humidity, 0.0),
+            "pressure": _num(s.pressure, 0.0),
         }
         for s in reversed(records)
     ]
+
+    log_info(f"[DASHBOARD] 📈 Chart data returned ({len(chart_data)} points)")
     return jsonify(chart_data), 200
 
 
@@ -71,7 +95,8 @@ def get_chart_data():
 @dashboard_bp.route("/dashboard/devices", methods=["GET"])
 def get_device_summary():
     """
-    Returns a summary of total, online, and offline devices.
+    Returns a summary of total, online, and offline devices;
+    emits updates to socket clients as a side-effect.
     """
     devices = Device.query.all()
     total = len(devices)
@@ -83,12 +108,13 @@ def get_device_summary():
         "online": online,
         "offline": offline,
         "mqtt_status": "connected" if online > 0 else "disconnected",
-        "timestamp": datetime.now(INDIA_TZ).isoformat(),
+        "timestamp_iso": datetime.now(INDIA_TZ).isoformat(timespec="milliseconds"),
     }
 
-    # ✅ Update all dashboards via sockets
+    # Push real-time updates to all dashboards
     emit_dashboard_update()
     emit_global_mqtt_status()
+    log_info(f"[DASHBOARD] 💻 Device summary updated: {data}")
 
     return jsonify(data), 200
 
@@ -102,5 +128,6 @@ def handle_new_sensor_data(data):
     When backend receives new MQTT or manual sensor data,
     broadcast to all connected dashboards.
     """
-    print(f"[SOCKET] 🔄 Pushing dashboard update: {data}")
+    # do not mutate client payload; ensure callers send numeric fields
+    log_info(f"[SOCKET] 🔄 Broadcasting dashboard update: {data}")
     socketio.emit("dashboard_update", data)

@@ -11,7 +11,7 @@ import {
   Lock,
 } from "lucide-react";
 import { useDevicesLive } from "@/hooks/useDevicesLive";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "@/api";
 import { io } from "socket.io-client";
 import {
@@ -25,9 +25,9 @@ import { Label } from "@/components/ui/label";
 
 const API = import.meta.env.VITE_API_URL || "http://127.0.0.1:5000";
 
-// ------------------------------------------------------
+// -------------------------------------------
 // Initialize Socket.IO client
-// ------------------------------------------------------
+// -------------------------------------------
 const socket = io(API, { transports: ["websocket", "polling"] });
 
 export default function Devices() {
@@ -50,47 +50,89 @@ export default function Devices() {
   const [editingDevice, setEditingDevice] = useState<any>(null);
   const [editedName, setEditedName] = useState("");
 
-  // ------------------------------------------------------
-  // Debounced reload
-  // ------------------------------------------------------
-  const debouncedReload = useCallback(() => {
-    const timeout = setTimeout(() => loadDevices(), 500);
-    return () => clearTimeout(timeout);
-  }, [loadDevices]);
+  // Track last update times per device to debounce offline flicker
+  const lastUpdateRef = useRef<Record<number, number>>({});
+  const offlineTimersRef = useRef<Record<number, NodeJS.Timeout>>({});
 
-  // ------------------------------------------------------
-  // 🧠 Live updates via Socket.IO
-  // ------------------------------------------------------
+  // -------------------------------------------
+  // 🧠 Live updates via Socket.IO (anti-flicker)
+  // -------------------------------------------
   useEffect(() => {
     const handleSensorData = (data: any) => {
+      if (!data?.device_id) return;
+      const now = Date.now();
+      lastUpdateRef.current[data.device_id] = now;
+
+      const online = data.status === "online";
+
       setDeviceData((prev) => ({
         ...prev,
         [data.device_id]: {
           ...prev[data.device_id],
-          // ✅ Preserve existing name if MQTT doesn't send one
           device_name:
             data.device_name ||
             prev[data.device_id]?.device_name ||
             "Unknown Device",
-          temperature: data.temperature,
-          humidity: data.humidity,
-          pressure: data.pressure,
+          temperature: online ? data.temperature : prev[data.device_id]?.temperature,
+          humidity: online ? data.humidity : prev[data.device_id]?.humidity,
+          pressure: online ? data.pressure : prev[data.device_id]?.pressure,
           lastSeen: data.timestamp,
-          status: data.status || "online",
+          status: online ? "online" : "offline",
         },
       }));
+
+      // Clear any pending offline timeout
+      if (offlineTimersRef.current[data.device_id]) {
+        clearTimeout(offlineTimersRef.current[data.device_id]);
+      }
+
+      // Set timeout: if no new data for 8 s → mark offline
+      offlineTimersRef.current[data.device_id] = setTimeout(() => {
+        const diff = Date.now() - (lastUpdateRef.current[data.device_id] || 0);
+        if (diff > 8000) {
+          setDeviceData((prev) => ({
+            ...prev,
+            [data.device_id]: {
+              ...prev[data.device_id],
+              status: "offline",
+              temperature: undefined,
+              humidity: undefined,
+              pressure: undefined,
+            },
+          }));
+        }
+      }, 9000);
     };
 
     const handleDeviceStatus = (data: any) => {
-      setDeviceData((prev) => ({
-        ...prev,
-        [data.device_id]: {
-          ...prev[data.device_id],
-          status: data.status,
-          lastSeen: data.last_seen || new Date().toISOString(),
-        },
-      }));
-      debouncedReload();
+      if (!data?.device_id) return;
+      const now = Date.now();
+      const diff = now - (lastUpdateRef.current[data.device_id] || 0);
+
+      // Ignore "offline" messages unless stale for >8s
+      if (data.status === "offline" && diff > 8000) {
+        setDeviceData((prev) => ({
+          ...prev,
+          [data.device_id]: {
+            ...prev[data.device_id],
+            status: "offline",
+            temperature: undefined,
+            humidity: undefined,
+            pressure: undefined,
+            lastSeen: data.last_seen || new Date().toISOString(),
+          },
+        }));
+      } else if (data.status === "online") {
+        lastUpdateRef.current[data.device_id] = now;
+        setDeviceData((prev) => ({
+          ...prev,
+          [data.device_id]: {
+            ...prev[data.device_id],
+            status: "online",
+            lastSeen: data.last_seen || new Date().toISOString(),
+          },
+        }));
+      }
     };
 
     socket.on("sensor_data", handleSensorData);
@@ -101,45 +143,47 @@ export default function Devices() {
       socket.off("sensor_data", handleSensorData);
       socket.off("device_status", handleDeviceStatus);
       socket.off("device_data_update", handleSensorData);
+      Object.values(offlineTimersRef.current).forEach(clearTimeout);
     };
-  }, [debouncedReload]);
+  }, []);
 
-  // ------------------------------------------------------
-  // 🔁 Polling every 2 seconds (for reliability)
-  // ------------------------------------------------------
+  // -------------------------------------------
+  // 🔁 Poll every 5 s (for backup)
+  // -------------------------------------------
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`${API}/api/data/latest`);
         const data = await res.json();
-        if (!data || !data.device_id) return;
+        if (!data?.device_id) return;
+        const online = data.status === "online";
+        lastUpdateRef.current[data.device_id] = Date.now();
 
         setDeviceData((prev) => ({
           ...prev,
           [data.device_id]: {
             ...prev[data.device_id],
-            // ✅ Preserve previous name if missing
             device_name:
               data.device_name ||
               prev[data.device_id]?.device_name ||
               "Unknown Device",
-            temperature: data.temperature,
-            humidity: data.humidity,
-            pressure: data.pressure,
+            temperature: online ? data.temperature : prev[data.device_id]?.temperature,
+            humidity: online ? data.humidity : prev[data.device_id]?.humidity,
+            pressure: online ? data.pressure : prev[data.device_id]?.pressure,
             lastSeen: data.timestamp,
-            status: data.status || "online",
+            status: online ? "online" : "offline",
           },
         }));
       } catch (err) {
         console.error("[Devices] polling error:", err);
       }
-    }, 2000);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  // ------------------------------------------------------
+  // -------------------------------------------
   // Form handlers
-  // ------------------------------------------------------
+  // -------------------------------------------
   const handleChange = (e: any) => {
     const { name, value, type, checked } = e.target;
     setFormData({
@@ -174,9 +218,6 @@ export default function Devices() {
     }
   };
 
-  // ------------------------------------------------------
-  // Device actions
-  // ------------------------------------------------------
   const handleDelete = async (deviceId: number) => {
     if (!confirm("Are you sure you want to delete this device?")) return;
     try {
@@ -229,14 +270,11 @@ export default function Devices() {
     }
   };
 
-  // ------------------------------------------------------
-  // Filter out simulated devices
-  // ------------------------------------------------------
   const realDevices = devices.filter((d) => !d.simulated);
 
-  // ------------------------------------------------------
-  // UI Rendering
-  // ------------------------------------------------------
+  // -------------------------------------------
+  // UI Rendering (unchanged)
+  // -------------------------------------------
   return (
     <DashboardLayout>
       <div>
@@ -245,7 +283,7 @@ export default function Devices() {
           Manage your MQTT devices and connections
         </p>
 
-        {/* -------------------- ADD DEVICE FORM -------------------- */}
+        {/* Add Device Form */}
         <div className="max-w-2xl bg-gradient-card shadow-lg rounded-xl p-6 border border-border mb-10">
           <h2 className="text-xl font-semibold mb-4">➕ Add Device</h2>
           <form onSubmit={handleSubmit} className="grid gap-4">
@@ -324,7 +362,6 @@ export default function Devices() {
               </div>
             </div>
 
-            {/* TLS Switch */}
             <div className="flex items-center gap-3 mt-1">
               <Switch
                 id="enableTLS"
@@ -377,12 +414,12 @@ export default function Devices() {
           </form>
         </div>
 
-        {/* -------------------- DEVICE CARDS -------------------- */}
+        {/* Device Cards */}
         {loading ? (
           <p className="text-center text-muted-foreground mb-8">
             Loading devices...
           </p>
-        ) : realDevices.length === 0 ? (
+        ) : devices.length === 0 ? (
           <div className="bg-gradient-card p-8 rounded-xl border border-border text-center mb-8">
             <WifiOff className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
             <h3 className="text-lg font-medium mb-2">No Devices Found</h3>
@@ -392,11 +429,11 @@ export default function Devices() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-            {realDevices.map((device) => {
+            {devices.map((device) => {
               const live = deviceData[device.id] || {};
               const isOnline =
-                (live.status || device.status) === "online" ||
-                device.is_connected;
+                ((live.status || device.status) === "online") &&
+                !!device.is_connected;
 
               return (
                 <div
@@ -448,7 +485,6 @@ export default function Devices() {
                     </DropdownMenu>
                   </div>
 
-                  {/* Online/Offline indicator */}
                   <span
                     className={`px-2 py-1 rounded-full text-xs font-medium ${
                       isOnline
@@ -459,12 +495,11 @@ export default function Devices() {
                     {isOnline ? "Online" : "Offline"}
                   </span>
 
-                  {/* Real-time Sensor Data */}
                   <div className="mt-3 text-sm text-muted-foreground space-y-1">
                     <div className="flex items-center justify-between">
                       <span>Temperature:</span>
                       <span className="font-medium text-foreground">
-                        {live.temperature !== undefined
+                        {isOnline && live.temperature !== undefined
                           ? `${live.temperature}°C`
                           : "--"}
                       </span>
@@ -472,7 +507,7 @@ export default function Devices() {
                     <div className="flex items-center justify-between">
                       <span>Humidity:</span>
                       <span className="font-medium text-foreground">
-                        {live.humidity !== undefined
+                        {isOnline && live.humidity !== undefined
                           ? `${live.humidity}%`
                           : "--"}
                       </span>
@@ -480,7 +515,7 @@ export default function Devices() {
                     <div className="flex items-center justify-between">
                       <span>Pressure:</span>
                       <span className="font-medium text-foreground">
-                        {live.pressure !== undefined
+                        {isOnline && live.pressure !== undefined
                           ? `${live.pressure} hPa`
                           : "--"}
                       </span>
@@ -500,6 +535,16 @@ export default function Devices() {
           </div>
         )}
       </div>
+
+      {editingDevice && (
+        <div className="hidden">
+          <input
+            value={editedName}
+            onChange={(e) => setEditedName(e.target.value)}
+          />
+          <button onClick={handleSaveEdit}>Save</button>
+        </div>
+      )}
     </DashboardLayout>
   );
 }

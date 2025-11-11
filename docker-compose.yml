@@ -1,16 +1,17 @@
+version: "3.9"
+
 services:
   francauto:
     build: .
     container_name: francauto-app
-    command: python -m backend.app   # 👈 ADD THIS LINE
+    command: python -m backend.run_server
     ports:
-      - "5000:5000"  # Flask backend
+      - "5000:5000"
     volumes:
-      - ./backend:/app/backend
       - ./backend/instance:/app/backend/instance
     environment:
       FLASK_APP: backend.app
-      FLASK_ENV: development
+      FLASK_ENV: production
       FLASK_RUN_HOST: 0.0.0.0
       VITE_API_URL: "http://localhost:5000"
       PYTHONUNBUFFERED: 1

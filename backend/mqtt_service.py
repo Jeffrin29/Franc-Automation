@@ -1,43 +1,42 @@
-# ====================================================================================================================
-# backend/mqtt_service.py — Single-Device Manual MQTT Service (thread-safe, eventlet/flask-safe)
-# ====================================================================================================================
+# =================================================================================================
+# Franc Automation - MQTT Service (Final Stable Anti-Flicker Build v2)
+# Handles:
+#   • Real & simulated MQTT data ingestion
+#   • SQLite storage
+#   • Unified Socket.IO updates for Dashboard / Devices / LiveData
+#   • Guarantees: no blinking, stable online state until manual disconnect
+# =================================================================================================
+import eventlet
+eventlet.monkey_patch(all=True)
 
 import json
 import re
 import threading
 import os
 import random
-import time
-from datetime import datetime, timedelta
+import socket
+from datetime import datetime
 from pytz import timezone
-
 import paho.mqtt.client as mqtt
 from flask import current_app
-
 from backend.extensions import db, socketio
 from backend.models import Device, Sensor
 from backend.utils.audit import log_info
-from backend.utils.dashboard import emit_dashboard_update
 
 # ==========================================================
-# Config / Globals
+# Globals / Config
 # ==========================================================
 KEEPALIVE = int(os.environ.get("MQTT_KEEPALIVE", 60))
 INDIA_TZ = timezone("Asia/Kolkata")
 
-_simulators = {}
-_mqtt_clients = {}
-_manual_disconnects = set()
-_last_seen = {}
 _active_device_id = None
+_mqtt_clients = {}
 _flask_app = None
-
 _state_lock = threading.RLock()
 
-_offline_timer = None
-_periodic_timer = None
 _simulator_thread = None
 _simulator_stop = threading.Event()
+
 
 # ==========================================================
 # Helpers
@@ -56,53 +55,145 @@ def _safe_now():
     return datetime.now(INDIA_TZ)
 
 
-def _ensure_aware(dt):
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return INDIA_TZ.localize(dt)
-    return dt.astimezone(INDIA_TZ)
+def _format_time(dt: datetime):
+    dt = dt.astimezone(INDIA_TZ)
+    iso = dt.isoformat(timespec="seconds")
+    ms = int(dt.timestamp() * 1000)
+    return iso, ms
+
+
+def _num(value):
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return 0.0
+
+
+def reachable_broker(host, port=1883, timeout=3):
+    """Ping broker before trying to connect."""
+    try:
+        socket.create_connection((host, port), timeout=timeout)
+        return True
+    except Exception:
+        return False
 
 
 def _parse_payload(payload_text: str):
+    """Normalize JSON payload."""
     try:
-        return json.loads(payload_text)
+        data = json.loads(payload_text)
     except Exception:
         try:
             fixed = re.sub(r'(\w+)\s*:', r'"\1":', payload_text)
-            return json.loads(fixed)
+            data = json.loads(fixed)
         except Exception:
-            return {"raw": payload_text}
+            data = {"raw": payload_text}
+
+    norm = {}
+    for k, v in data.items():
+        k = str(k).lower()
+        if k in ("temperature", "temp", "t"):
+            norm["temperature"] = _num(v)
+        elif k in ("humidity", "hum", "h"):
+            norm["humidity"] = _num(v)
+        elif k in ("pressure", "press", "p"):
+            norm["pressure"] = _num(v)
+    norm.setdefault("temperature", 0.0)
+    norm.setdefault("humidity", 0.0)
+    norm.setdefault("pressure", 0.0)
+    return norm
+
 
 # ==========================================================
-# Simulator (HiveMQ / EMQX)
+# Unified emitters
 # ==========================================================
-def _start_simulated_data(device: Device, broker_host: str):
-    """Starts a background thread emitting random data every 5 seconds for HiveMQ/EMQX."""
-    global _simulator_thread, _simulator_stop
+def _emit_all(device, temperature, humidity, pressure, status):
+    """Emit updates to all UI pages (Dashboard, LiveData, Devices)."""
+    app = _get_flask_app()
+    if not app:
+        return
 
-    if broker_host not in ["broker.hivemq.com", "broker.emqx.io"]:
+    now = _safe_now()
+    iso, _ = _format_time(now)
+
+    device_id = getattr(device, "id", None) if device else None
+    name = getattr(device, "name", "Unknown") if device else "Unknown"
+
+    payload = {
+        "device_id": device_id,
+        "device_name": name,
+        "temperature": _num(temperature),
+        "humidity": _num(humidity),
+        "pressure": _num(pressure),
+        "status": status,
+        "timestamp": iso,
+        "devices_online": 1 if status == "online" else 0,
+    }
+
+    with app.app_context():
+        socketio.emit("sensor_data", payload, namespace="/")
+        socketio.emit("device_data_update", payload, namespace="/")
+        socketio.emit("dashboard_update", payload, namespace="/")
+        socketio.emit(
+            "device_status",
+            {"device_id": device_id, "status": status, "last_seen": iso},
+            namespace="/",
+        )
+
+    print(
+        f"[EMIT] → {name} {status.upper()} | "
+        f"T={payload['temperature']}°C H={payload['humidity']}% P={payload['pressure']} | {iso}"
+    )
+
+
+def emit_global_mqtt_status(force_offline=False):
+    """Emit a global MQTT connection summary used by dashboards (anti-flicker)."""
+    app = _get_flask_app()
+    if not app:
+        return
+    with app.app_context():
+        # Only go offline if forced or no active device
+        online = 1 if (_active_device_id and not force_offline) else 0
+        total = Device.query.count()
+        iso, ms = _format_time(_safe_now())
+        payload = {
+            "status": "connected" if online else "disconnected",
+            "devices_online": online,
+            "devices_total": total,
+            "timestamp_iso": iso if online else "--",
+            "timestamp_ms": ms if online else "--",
+        }
+        socketio.emit("mqtt_status", payload, namespace="/")
+
+
+# ==========================================================
+# Simulator — emits fake readings every 2s (only when broker connected)
+# ==========================================================
+def _start_simulator(device, host, interval=2.0):
+    global _simulator_thread
+    _stop_simulator()
+
+    if host not in ("broker.hivemq.com", "broker.emqx.io", "test.mosquitto.org"):
         return
 
     _simulator_stop.clear()
 
-    def simulator_loop():
+    def sim_loop():
+        log_info(f"[SIMULATOR] 🎮 Started for {device.name} ({host})")
         app = _get_flask_app()
-        log_info(f"[SIMULATOR] 🎮 Started for {device.name} on {broker_host}")
         while not _simulator_stop.is_set():
-            with _state_lock:
-                if _active_device_id != device.id:
-                    break
+            if _active_device_id != device.id or not device.is_connected:
+                break
+
             now = _safe_now()
             data = {
-                "temperature": round(random.uniform(25, 40), 2),
-                "humidity": round(random.uniform(40, 80), 2),
-                "pressure": round(random.uniform(990, 1040), 2),
+                "temperature": round(random.uniform(22.0, 36.0), 2),
+                "humidity": round(random.uniform(35.0, 75.0), 2),
+                "pressure": round(random.uniform(990.0, 1035.0), 2),
             }
-            log_info(f"[SIMULATOR] 🔄 Generated data for {device.name}: {data}")
             if app:
                 with app.app_context():
-                    rec = Sensor(
+                    s = Sensor(
                         device_id=device.id,
                         topic=f"francauto/devices/{device.name}",
                         payload=json.dumps(data),
@@ -111,144 +202,98 @@ def _start_simulated_data(device: Device, broker_host: str):
                         pressure=data["pressure"],
                         timestamp=now,
                     )
-                    db.session.add(rec)
+                    db.session.add(s)
+                    device.last_seen = now
+                    device.status = "online"
+                    device.is_connected = True
                     db.session.commit()
+            _emit_all(device, **data, status="online")
+            emit_global_mqtt_status(force_offline=False)
+            eventlet.sleep(interval)
 
-                    socketio.emit("device_data_update", {
-                        "device_id": device.id,
-                        "device_name": device.name,
-                        **data,
-                        "status": "online",
-                        "timestamp": now.isoformat(),
-                    })
-                    emit_dashboard_update(device.id)
-            time.sleep(5)
         log_info(f"[SIMULATOR] 🛑 Stopped for {device.name}")
 
-    _simulator_thread = threading.Thread(target=simulator_loop, daemon=True)
-    _simulator_thread.start()
+    _simulator_thread = eventlet.spawn(sim_loop)
 
 
-def _stop_simulated_data():
-    """Stops simulator thread if running."""
-    global _simulator_stop
+def _stop_simulator():
     _simulator_stop.set()
+    global _simulator_thread
+    if _simulator_thread:
+        try:
+            _simulator_thread.kill()
+        except Exception:
+            pass
+        _simulator_thread = None
+
 
 # ==========================================================
-# Message Handler
+# MQTT message handler
 # ==========================================================
-def handle_message(device: Device, msg):
-    global _last_seen, _active_device_id
-    with _state_lock:
-        if device.id != _active_device_id:
-            log_info(f"[MQTT] ⚠️ Ignoring message from inactive device {device.name}")
-            return
-
+def handle_message(device, msg):
     app = _get_flask_app()
     if not app:
         return
-
     try:
         payload_text = msg.payload.decode(errors="ignore")
     except Exception:
         payload_text = str(msg.payload)
 
-    topic = getattr(msg, "topic", None)
-    log_info(f"[MQTT] 📩 Message from {device.name} ({topic}): {payload_text}")
+    data = _parse_payload(payload_text)
+    now = _safe_now()
 
-    try:
-        if topic == "random/test":
-            try:
-                rnd = float(payload_text.strip())
-            except Exception:
-                rnd = random.uniform(0, 100)
-            data = {
-                "temperature": round(rnd % 40, 2),
-                "humidity": round(40 + (rnd % 60), 2),
-                "pressure": round(1000 + (rnd % 25), 2),
-            }
-        else:
-            data = _parse_payload(payload_text)
+    with app.app_context():
+        s = Sensor(
+            device_id=device.id,
+            topic=getattr(msg, "topic", f"francauto/devices/{device.name}"),
+            payload=json.dumps(data),
+            temperature=data["temperature"],
+            humidity=data["humidity"],
+            pressure=data["pressure"],
+            timestamp=now,
+        )
+        db.session.add(s)
+        device.status = "online"
+        device.is_connected = True
+        device.last_seen = now
+        db.session.commit()
 
-        now = _safe_now()
-        with app.app_context():
-            device.status = "online"
-            device.is_connected = True
-            device.updated_at = now
-            db.session.commit()
-            _last_seen[device.id] = now
+    _emit_all(device, **data, status="online")
+    emit_global_mqtt_status(force_offline=False)
 
-            rec = Sensor(
-                device_id=device.id,
-                topic=topic,
-                payload=json.dumps(data),
-                temperature=float(data.get("temperature", 0.0)),
-                humidity=float(data.get("humidity", 0.0)),
-                pressure=float(data.get("pressure", 0.0)),
-                timestamp=now,
-            )
-            db.session.add(rec)
-            db.session.commit()
-
-            socketio.emit("device_data_update", {
-                "device_id": device.id,
-                "device_name": device.name,
-                **data,
-                "status": "online",
-                "timestamp": now.isoformat(),
-            })
-            emit_dashboard_update(device.id)
-            emit_global_mqtt_status()
-    except Exception as exc:
-        log_info(f"[ERROR] Failed to handle message for {device.name}: {exc}")
-        with app.app_context():
-            db.session.rollback()
 
 # ==========================================================
-# Start / Stop MQTT Client
+# Start / Stop MQTT client
 # ==========================================================
-def start_mqtt_client(device: Device) -> bool:
+def start_mqtt_client(device):
     global _active_device_id, _mqtt_clients
 
     with _state_lock:
-        if _active_device_id is not None:
-            log_info(f"[MQTT] ❌ Another device is active. Stop it before connecting {device.name}.")
+        if _active_device_id:
+            log_info(f"[MQTT] ❌ Another device already active.")
             return False
 
-        broker_host = (device.host or "").strip().lower()
-        if broker_host not in ["test.mosquitto.org", "broker.hivemq.com", "broker.emqx.io"]:
-            broker_host = "broker.hivemq.com"
-
+        host = (device.host or "broker.hivemq.com").strip().lower()
         topic = f"francauto/devices/{device.name}"
+
+        if not reachable_broker(host, 1883, 3):
+            log_info(f"[MQTT] ⚠️ Broker {host} unreachable → staying offline.")
+            app = _get_flask_app()
+            if app:
+                with app.app_context():
+                    device.status = "offline"
+                    device.is_connected = False
+                    db.session.commit()
+            _emit_all(device, 0, 0, 0, "offline")
+            emit_global_mqtt_status(force_offline=True)
+            return False
 
         try:
             client = mqtt.Client()
-            client.user_data_set({"device_id": device.id})
-
-            def on_message(c, userdata, message):
-                handle_message(device, message)
-
-            def on_connect(c, userdata, flags, rc):
-                log_info(f"[MQTT] 🔗 Connected rc={rc} to {broker_host}")
-                c.subscribe(topic)
-                log_info(f"[MQTT] ✅ Subscribed: {topic}")
-                if broker_host == "test.mosquitto.org":
-                    c.subscribe("random/test")
-                    log_info("[MQTT] 🎲 Subscribed to simulated topic random/test")
-                else:
-                    _start_simulated_data(device, broker_host)
-
-            def on_disconnect(c, userdata, rc):
-                log_info(f"[MQTT] 🔌 Disconnected rc={rc} for {device.name}")
-                _stop_simulated_data()
-
-            client.on_connect = on_connect
-            client.on_message = on_message
-            client.on_disconnect = on_disconnect
-
-            client.connect(broker_host, 1883, KEEPALIVE)
+            client.on_connect = lambda c, u, f, rc: c.subscribe(topic)
+            client.on_message = lambda c, u, m: handle_message(device, m)
+            client.connect(host, 1883, KEEPALIVE)
             client.loop_start()
-
             _mqtt_clients[device.id] = client
             _active_device_id = device.id
 
@@ -257,129 +302,97 @@ def start_mqtt_client(device: Device) -> bool:
                 with app.app_context():
                     device.status = "online"
                     device.is_connected = True
-                    device.updated_at = _safe_now()
+                    device.last_seen = _safe_now()
                     db.session.commit()
 
-            log_info(f"[MQTT] ✅ Device started: {device.name} ({broker_host})")
-            emit_dashboard_update(device.id)
-            emit_global_mqtt_status()
+            _start_simulator(device, host)
+            emit_global_mqtt_status(force_offline=False)
+            log_info(f"[MQTT] ✅ Device {device.name} started successfully")
             return True
 
         except Exception as e:
-            log_info(f"[ERROR] MQTT start failed for {device.name}: {e}")
+            log_info(f"[MQTT] ❌ Connection failed for {device.name}: {e}")
+            app = _get_flask_app()
+            if app:
+                with app.app_context():
+                    device.status = "offline"
+                    device.is_connected = False
+                    db.session.commit()
+            _emit_all(device, 0, 0, 0, "offline")
+            emit_global_mqtt_status(force_offline=True)
             return False
 
 
-def stop_mqtt_client(device: Device, manual: bool = True) -> bool:
+def stop_mqtt_client(device):
     global _active_device_id, _mqtt_clients
-
     with _state_lock:
         client = _mqtt_clients.pop(device.id, None)
-        _stop_simulated_data()
+        _stop_simulator()
+
         if client:
             try:
                 client.loop_stop()
                 client.disconnect()
             except Exception:
                 pass
-        if _active_device_id == device.id:
-            _active_device_id = None
+
+        _active_device_id = None
 
         app = _get_flask_app()
         if app:
             with app.app_context():
                 device.status = "offline"
                 device.is_connected = False
-                device.updated_at = _safe_now()
+                device.last_seen = _safe_now()
                 db.session.commit()
 
-        socketio.emit("device_status", {
-            "device_id": device.id,
-            "device_name": device.name,
-            "status": "offline",
-            "last_seen": _safe_now().isoformat(),
-        })
-        emit_dashboard_update(device.id)
-        emit_global_mqtt_status()
-
-        log_info(f"[MQTT] 🔌 Device disconnected: {device.name}")
+        _emit_all(device, 0, 0, 0, "offline")
+        emit_global_mqtt_status(force_offline=True)
+        log_info(f"[MQTT] 🔌 Device {device.name} disconnected cleanly")
         return True
 
-# ==========================================================
-# Global MQTT Status
-# ==========================================================
-def emit_global_mqtt_status():
-    app = _get_flask_app()
-    if not app:
-        return
-    with app.app_context():
-        online_devices = 1 if _active_device_id else 0
-        total_devices = Device.query.count()
-        socketio.emit("mqtt_status", {
-            "status": "connected" if online_devices else "disconnected",
-            "devices_online": online_devices,
-            "devices_total": total_devices,
-            "timestamp": _safe_now().isoformat(),
-        })
 
 # ==========================================================
-# Init / Cleanup
+# Reset / Init
 # ==========================================================
 def reset_all_mqtt_state():
     global _active_device_id, _mqtt_clients
-    with _state_lock:
-        _active_device_id = None
-        _mqtt_clients.clear()
-        _stop_simulated_data()
+    _active_device_id = None
+    _mqtt_clients.clear()
+    _stop_simulator()
+
     app = _get_flask_app()
     if app:
         with app.app_context():
-            for dev in Device.query.all():
-                dev.status = "offline"
-                dev.is_connected = False
-                dev.updated_at = _safe_now()
+            for d in Device.query.all():
+                d.status = "offline"
+                d.is_connected = False
+                d.last_seen = _safe_now()
             db.session.commit()
-    log_info("[MQTT] 🔄 Reset all MQTT states to offline.")
+    emit_global_mqtt_status(force_offline=True)
+    log_info("[MQTT] 🔄 Reset all devices to offline")
 
 
 def init_mqtt_system():
     reset_all_mqtt_state()
-    log_info("[MQTT] 🧩 MQTT system initialized (manual connect mode).")
+    log_info("[MQTT] 🧩 MQTT system initialized")
+
 
 # ==========================================================
-# Compatibility placeholders for older imports
+# Public wrappers (required for device_routes.py)
 # ==========================================================
 def start_simulator(device):
-    """Compatibility stub for old imports — handled automatically now."""
-    log_info(f"[SIMULATOR] ⚙️ start_simulator() called for {device.name} — handled internally.")
+    """Public wrapper to start simulator safely (used in routes)."""
+    host = (getattr(device, "host", "") or "").strip().lower()
+    _start_simulator(device, host, 2.0)
     return True
 
 
 def stop_simulator(device):
-    """Compatibility stub for old imports."""
-    _stop_simulated_data()
-    log_info(f"[SIMULATOR] ⚙️ stop_simulator() called for {device.name}.")
+    """Public wrapper to stop simulator safely (used in routes)."""
+    _stop_simulator()
     return True
 
-# ==========================================================
-# Device Deletion Handler (for cleanup)
-# ==========================================================
-def handle_device_deletion(device_id: int):
-    """Cleanup MQTT connection if the device is deleted."""
-    global _active_device_id, _mqtt_clients
-    with _state_lock:
-        client = _mqtt_clients.pop(device_id, None)
-        if client:
-            try:
-                client.loop_stop()
-                client.disconnect()
-                log_info(f"[MQTT] 🧹 Cleaned up client for deleted device id={device_id}.")
-            except Exception:
-                pass
-
-        if _active_device_id == device_id:
-            _active_device_id = None
-            log_info(f"[MQTT] 🧹 Cleared active device id={device_id} after deletion.")
 
 # ==========================================================
 # Exports
@@ -392,11 +405,4 @@ __all__ = [
     "init_mqtt_system",
     "start_simulator",
     "stop_simulator",
-    "handle_device_deletion",
 ]
-# ==========================================================
-# Compatibility Aliases (for older imports)
-# ==========================================================
-simulators = _simulators
-mqtt_clients = _mqtt_clients
-manual_disconnects = _manual_disconnects
