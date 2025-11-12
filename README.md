@@ -331,13 +331,6 @@ git push
 This project is licensed under the MIT License.
 You are free to use, modify, and distribute this code with proper attribution.
 
-👨‍💻 Author
-Jeffrin M
-Full Stack Developer | IoT & Automation Enthusiast
-
-📍 Dubai, UAE
-📧 [Add your email here]
-🔗 [Add your LinkedIn or Portfolio link here]
 
 🏁 Project Status
 ✅ Stable and fully functional
