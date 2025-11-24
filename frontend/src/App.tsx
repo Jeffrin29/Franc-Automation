@@ -14,7 +14,6 @@ import LiveDataPage from "@/pages/LiveDataPage";
 import DashboardBuilder from "@/pages/DashboardBuilder";
 import Dashboards from "@/pages/Dashboards";
 import  DashboardPage  from "@/pages/DashboardPage";
-import HistoryPage from "@/pages/History";
 
 const queryClient = new QueryClient();
 
@@ -38,7 +37,6 @@ const App = () => (
           <Route path="/live" element={<LiveDataPage />} />
           <Route path="/dashboard-builder" element={<DashboardBuilder />} />
           <Route path="/dashboards" element={<Dashboards />} />
-          <Route path="/history" element={<HistoryPage />} />
           {/* Add more routes like live-data, history later */}
           <Route path="*" element={<NotFound />} />
         </Routes>
