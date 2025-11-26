@@ -41,8 +41,7 @@ class User(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(100), unique=True, nullable=False)
-    email = db.Column(db.String(100), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)
+    password = db.Column(db.String(255), nullable=False)   # PLAIN TEXT (as you want)
     image_url = db.Column(db.String(255))
     is_active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -54,7 +53,6 @@ class User(db.Model):
         return {
             "id": self.id,
             "username": self.username,
-            "email": self.email,
             "roles": [r.name for r in self.roles],
             "devices": [d.name for d in self.devices],
             "is_active": self.is_active,
@@ -126,7 +124,6 @@ class Device(db.Model):
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_seen = db.Column(db.DateTime, nullable=True)
 
-    # 🔗 Relationship to sensors
     sensors = db.relationship("Sensor", back_populates="device", cascade="all, delete-orphan")
 
     def to_dict(self):
@@ -152,7 +149,7 @@ class Device(db.Model):
         }
 
 # ==========================================================
-# Sensor Model (used for MQTT + Dashboard + Live Data)
+# Sensor Model
 # ==========================================================
 INDIA_TZ = timezone("Asia/Kolkata")
 
@@ -161,15 +158,14 @@ class Sensor(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     device_id = db.Column(db.Integer, db.ForeignKey("devices.id"), nullable=False)
-    topic = db.Column(db.String(255))       # ✅ added
-    payload = db.Column(db.Text)            # ✅ added
+    topic = db.Column(db.String(255))
+    payload = db.Column(db.Text)
     temperature = db.Column(db.Float)
     humidity = db.Column(db.Float)
     pressure = db.Column(db.Float)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-    raw_data = db.Column(JSON)  # ✅ keeps your structured MQTT payload (JSON)
+    raw_data = db.Column(JSON)
 
-    # Relationship back to device
     device = db.relationship("Device", back_populates="sensors")
 
     def to_dict(self):
@@ -209,24 +205,19 @@ class Setting(db.Model):
     def to_dict(self):
         return {"key": self.key, "value": self.value}
 
-# ========================================
-# History Model (Stores past sensor records)
-# ========================================
+# ==========================================================
+# History Model
+# ==========================================================
 class History(db.Model):
     __tablename__ = "history"
 
     id = db.Column(db.Integer, primary_key=True)
-
-    # Linked to a device
-    device_id = db.Column(db.Integer, db.ForeignKey("devices.id"), nullable=True)
-
-    temperature = db.Column(db.Float, nullable=True)
-    humidity = db.Column(db.Float, nullable=True)
-    pressure = db.Column(db.Float, nullable=True)
-
+    device_id = db.Column(db.Integer, db.ForeignKey("devices.id"))
+    temperature = db.Column(db.Float)
+    humidity = db.Column(db.Float)
+    pressure = db.Column(db.Float)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # Relationship back to Device
     device = db.relationship("Device", backref=db.backref("history", lazy=True))
 
     def to_dict(self):

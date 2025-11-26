@@ -30,10 +30,14 @@ import time
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from flask_migrate import Migrate, init as migrate_init
+
 from backend.extensions import db, socketio
 from backend.utils.audit import log_info
 from backend.models import *
 from backend.mqtt_service import start_mqtt_client, stop_mqtt_client, init_mqtt_system
+
+# Import seeding function (adds predefined users)
+from backend.routes.auth_routes import seed_default_users
 
 # ==========================================================
 # Inter-process file lock for MQTT
@@ -205,7 +209,15 @@ if __name__ == "__main__":
 
     with app.app_context():
         auto_migrate()
-        init_mqtt_system()  # sets all devices offline
+
+        # ⭐ NEW: Seed login accounts (superadmin/admin/users)
+        try:
+            seed_default_users()
+            log_info("[SEED] Default users seeded (if missing).")
+        except Exception as e:
+            log_info(f"[SEED] Warning: seeding default users failed: {e}")
+
+        init_mqtt_system()
 
     # Prevent duplicate MQTT threads
     lock_path = os.path.join(tempfile.gettempdir(), "mqtt_init.lock")
@@ -220,7 +232,7 @@ if __name__ == "__main__":
 
     log_info("🚀 Franc Automation Backend + Frontend running with Eventlet at http://0.0.0.0:5000")
 
-    # ✅ use eventlet’s WSGI server (stable for socketio)
+    # Use eventlet’s WSGI server
     eventlet.wsgi.server(
         eventlet.listen(("0.0.0.0", int(os.environ.get("PORT", 5000)))),
         app,

@@ -3,22 +3,24 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+
 import Login from "@/pages/Login";
+import Signup from "@/pages/Signup";
+
 import Devices from "@/pages/Devices";
-import Settings from "@/pages/Settings";
-import NotFound from "@/pages/NotFound";
-import RoleManagement from "@/pages/RoleManagement";
-import UserManagement from "@/pages/UserManagement";
 import Sensors from "@/pages/Sensors";
+import Settings from "@/pages/Settings";
 import LiveDataPage from "@/pages/LiveDataPage";
 import DashboardBuilder from "@/pages/DashboardBuilder";
 import Dashboards from "@/pages/Dashboards";
-import  DashboardPage  from "@/pages/DashboardPage";
+import DashboardPage from "@/pages/DashboardPage";
+import RoleManagement from "@/pages/RoleManagement";
+import UserManagement from "@/pages/UserManagement";
+import NotFound from "@/pages/NotFound";
+
+import ProtectedRoute from "@/components/ProtectedRoute";
 
 const queryClient = new QueryClient();
-
-// TODO: Replace this with your actual data source
-const tableData: any[] = [];
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -27,17 +29,95 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
+          {/* Public Routes */}
           <Route path="/" element={<Login />} />
-          <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/devices" element={<Devices />} />
-          <Route path="/sensors" element={<Sensors />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/roles" element={<RoleManagement />} />
-          <Route path="/users" element={<UserManagement />} />
-          <Route path="/live" element={<LiveDataPage />} />
-          <Route path="/dashboard-builder" element={<DashboardBuilder />} />
-          <Route path="/dashboards" element={<Dashboards />} />
-          {/* Add more routes like live-data, history later */}
+          <Route path="/signup" element={<Signup />} />
+
+          {/* Protected Routes */}
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin", "admin", "user"]}>
+                <DashboardPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/devices"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin", "admin", "user"]}>
+                <Devices />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/sensors"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin", "admin", "user"]}>
+                <Sensors />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/live"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin", "admin", "user"]}>
+                <LiveDataPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/history"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin", "admin", "user"]}>
+                <Dashboards />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/dashboard-builder"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin", "admin", "user"]}>
+                <DashboardBuilder />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Admin Only */}
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin", "admin"]}>
+                <Settings />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Superadmin Only */}
+          <Route
+            path="/role-management"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin"]}>
+                <RoleManagement />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/user-management"
+            element={
+              <ProtectedRoute allowedRoles={["superadmin"]}>
+                <UserManagement />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 404 */}
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>

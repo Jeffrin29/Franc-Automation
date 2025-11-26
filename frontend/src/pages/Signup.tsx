@@ -4,7 +4,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { AlertCircle, CheckCircle } from "lucide-react";
 
-const Login: React.FC = () => {
+const Signup: React.FC = () => {
   const navigate = useNavigate();
 
   const [username, setUsername] = useState("");
@@ -13,13 +13,13 @@ const Login: React.FC = () => {
   const [message, setMessage] = useState("");
   const [messageType, setMessageType] = useState<"success" | "error" | "">("");
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setMessage("");
     setMessageType("");
 
     try {
-      const res = await fetch("/api/auth/login", {
+      const res = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
@@ -28,24 +28,24 @@ const Login: React.FC = () => {
       const data = await res.json();
 
       if (data.status !== "success") {
-        setMessage(data.message || "Invalid credentials");
+        setMessage(data.message || "Signup failed");
         setMessageType("error");
         return;
       }
 
-      // Save user session (minimal)
+      // Store token → redirect (basic)
       localStorage.setItem(
         "user",
         JSON.stringify({
           token: data.token,
-          role: data.role,
+          role: "user",
           username: data.username,
         })
       );
       localStorage.setItem("isAuthenticated", "true");
-      localStorage.setItem("role", data.role || "user");
+      localStorage.setItem("role", "user");
 
-      setMessage("Login successful! Redirecting...");
+      setMessage("Signup successful! Redirecting...");
       setMessageType("success");
 
       setTimeout(() => navigate("/dashboard"), 700);
@@ -58,18 +58,17 @@ const Login: React.FC = () => {
   return (
     <div className="min-h-screen flex flex-col justify-center items-center bg-[#0B0B0F] text-gray-200">
       <div className="w-full max-w-md px-6">
-        {/* Login Card (logos removed as requested) */}
         <motion.div
-          initial={{ opacity: 0, y: 30 }}
+          initial={{ opacity: 0, y: 35 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
           className="bg-[#121218] shadow-lg rounded-2xl p-6 border border-gray-700"
         >
           <h2 className="text-3xl font-bold text-center mb-4 text-white">
-            Sign In
+            Create Account
           </h2>
 
-          <form onSubmit={handleLogin} autoComplete="off" className="space-y-4">
+          <form onSubmit={handleSignup} className="space-y-4">
             <div>
               <label className="block text-sm font-semibold mb-1">Username</label>
               <input
@@ -97,11 +96,10 @@ const Login: React.FC = () => {
               type="submit"
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg text-lg transition"
             >
-              Login
+              Sign Up
             </button>
           </form>
 
-          {/* Message */}
           {message && (
             <div
               className={`mt-4 p-3 rounded-lg flex items-center gap-2 ${
@@ -120,9 +118,9 @@ const Login: React.FC = () => {
           )}
 
           <p className="text-center text-sm mt-4">
-            Not registered?{" "}
-            <Link to="/signup" className="text-blue-400 hover:underline">
-              Create an account
+            Already have an account?{" "}
+            <Link to="/" className="text-blue-400 hover:underline">
+              Login here
             </Link>
           </p>
         </motion.div>
@@ -131,4 +129,4 @@ const Login: React.FC = () => {
   );
 };
 
-export default Login;
+export default Signup;
